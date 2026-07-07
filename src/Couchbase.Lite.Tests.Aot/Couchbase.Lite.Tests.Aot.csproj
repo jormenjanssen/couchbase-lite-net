@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\TargetFrameworks.props" />
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>$(ConsoleDotNetVersion)</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Publish with full Native AOT compilation.  `dotnet publish` of this project
+         is the proof that Couchbase Lite works without a JIT or reflection.
+         Native AOT needs the C++ toolchain (see https://aka.ms/nativeaot-prerequisites);
+         on machines without it, pass -p:ForceTrimmedPublish=true to produce a fully
+         trimmed self-contained publish instead, which runs the same trimmer. -->
+    <PublishAot Condition=" '$(ForceTrimmedPublish)' != 'true' ">true</PublishAot>
+    <PublishTrimmed Condition=" '$(ForceTrimmedPublish)' == 'true' ">true</PublishTrimmed>
+    <SelfContained Condition=" '$(ForceTrimmedPublish)' == 'true' ">true</SelfContained>
+    <!-- Fail fast at runtime if any code path falls back to the reflection-based
+         System.Text.Json serializer instead of source generation / converters. -->
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Couchbase.Lite\Couchbase.Lite.csproj" />
+  </ItemGroup>
+
+  <!-- LiteCore native library, when present in the standard prebuilt location -->
+  <ItemGroup Condition=" Exists('$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\windows\x86_64\bin\LiteCore.dll') ">
+    <None Include="$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\windows\x86_64\bin\LiteCore.dll">
+      <Link>x64\LiteCore.dll</Link>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+  <ItemGroup Condition=" Exists('$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\x86_64\lib\libLiteCore.so') ">
+    <None Include="$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\x86_64\lib\*.so*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
+</Project>
