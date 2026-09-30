@@ -12,6 +12,8 @@
     <Configurations>Debug;Release;Packaging;PackagingDebug</Configurations>
     <TargetFrameworks Condition=" '$(OS)' != 'Windows_NT' ">$(ConsoleDotNetVersion)</TargetFrameworks>
     <TargetFrameworks Condition=" '$(OS)' == 'Windows_NT' ">$(DotNetFrameworkVersion);$(ConsoleDotNetVersion);$(MauiDotNetVersion)-windows$(WinUIMinimumVersion)</TargetFrameworks>
+    <!-- See Couchbase.Lite.csproj: lets a desktop-only package build pick its TFMs. -->
+    <TargetFrameworks Condition="'$(CblTargetFrameworksOverride)' != ''">$(CblTargetFrameworksOverride)</TargetFrameworks>
 	<SingleProject>true</SingleProject>
     <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
   </PropertyGroup>

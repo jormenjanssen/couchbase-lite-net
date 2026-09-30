@@ -24,7 +24,7 @@ env:
 
 jobs:
   version:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
       publish: ${{ steps.v.outputs.publish }}
@@ -42,7 +42,7 @@ jobs:
   litecore-linux-arm64:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: couchbase-lite-net
 
@@ -97,7 +97,7 @@ jobs:
           echo "Highest required glibc symbol: $max"
           test "$(printf '%s\n' "$max" GLIBC_2.36 | sort -V | tail -n1)" = "GLIBC_2.36"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: litecore-linux-arm64
           path: couchbase-lite-core/out/*
@@ -105,15 +105,20 @@ jobs:
 
   pack:
     needs: [version, litecore-linux-arm64]
-    runs-on: ubuntu-latest
+    # Upstream only builds on Windows: its .projitems reference several paths with a different case than the
+    # directories on disk, which breaks on a case-sensitive file system.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           path: couchbase-lite-net
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           global-json-file: couchbase-lite-net/src/global.json
 
@@ -125,7 +130,7 @@ jobs:
         run: |
           curl -sSfL -o support.nupkg \
             "https://api.nuget.org/v3-flatcontainer/couchbase.lite.support.netdesktop/${UPSTREAM_VERSION}/couchbase.lite.support.netdesktop.${UPSTREAM_VERSION}.nupkg"
-          unzip -q support.nupkg 'runtimes/*' -d official
+          python -c "import zipfile; z = zipfile.ZipFile('support.nupkg'); z.extractall('official', [n for n in z.namelist() if n.startswith('runtimes/')])"
           v=couchbase-lite-net/vendor/prebuilt_core
           mkdir -p $v/windows/x86_64/bin $v/windows/arm64/bin $v/macos/lib $v/linux/x86_64/lib $v/linux/aarch64/lib
           cp official/runtimes/win-x64/native/LiteCore.* $v/windows/x86_64/bin/
@@ -133,7 +138,7 @@ jobs:
           cp official/runtimes/osx/native/libLiteCore.dylib $v/macos/lib/
           cp official/runtimes/linux-x64/native/* $v/linux/x86_64/lib/
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: litecore-linux-arm64
           path: couchbase-lite-net/vendor/prebuilt_core/linux/aarch64/lib
@@ -141,14 +146,14 @@ jobs:
       - name: Pack
         working-directory: couchbase-lite-net/src
         run: |
-          dotnet pack Couchbase.Lite.Support.NetDesktop/Couchbase.Lite.Support.NetDesktop.csproj -c Packaging -p:Version=$VERSION
+          dotnet pack Couchbase.Lite.Support.NetDesktop/Couchbase.Lite.Support.NetDesktop.csproj -c Packaging -p:Version=$VERSION -p:CblTargetFrameworksOverride=net8.0
           dotnet pack Couchbase.Lite/Couchbase.Lite.csproj -c Packaging -p:Version=$VERSION -p:CblTargetFrameworksOverride=net8.0
 
       # Same as upstream do_package.ps1: pin the Support.NetDesktop dependency to the exact version.
       - name: Pin Support.NetDesktop dependency
         working-directory: couchbase-lite-net/src/packages
         run: |
-          python3 - "$VERSION" <<'PY'
+          python - "$VERSION" <<'PY'
           import sys, zipfile, shutil
           version = sys.argv[1]
           path = f"Couchbase.Lite.{version}.nupkg"
@@ -169,15 +174,24 @@ jobs:
         working-directory: couchbase-lite-net/src/packages
         run: |
           ls -l
-          unzip -l "Couchbase.Lite.Support.NetDesktop.$VERSION.nupkg" | grep -E 'runtimes/'
-          for f in runtimes/linux-arm64/native/libLiteCore.so runtimes/linux-x64/native/libLiteCore.so \
-                   runtimes/win-x64/native/LiteCore.dll runtimes/osx/native/libLiteCore.dylib; do
-            unzip -l "Couchbase.Lite.Support.NetDesktop.$VERSION.nupkg" | grep -q " $f\$" || { echo "missing $f"; exit 1; }
-          done
-          unzip -p "Couchbase.Lite.$VERSION.nupkg" Couchbase.Lite.nuspec | tee /dev/stderr | grep -q "version=\"\[$VERSION\]\""
-          unzip -p "Couchbase.Lite.$VERSION.nupkg" lib/net8.0/Couchbase.Lite.dll | grep -aq IsTrimmable
+          python - "$VERSION" <<'PY'
+          import sys, zipfile
+          version = sys.argv[1]
+          names = set(zipfile.ZipFile(f"Couchbase.Lite.Support.NetDesktop.{version}.nupkg").namelist())
+          print("\n".join(sorted(n for n in names if n.startswith(("runtimes/", "lib/")))))
+          for required in ("runtimes/linux-arm64/native/libLiteCore.so", "runtimes/linux-arm64/native/libicuuc.so.76",
+                           "runtimes/linux-x64/native/libLiteCore.so", "runtimes/win-x64/native/LiteCore.dll",
+                           "runtimes/osx/native/libLiteCore.dylib", "lib/net8.0/Couchbase.Lite.Support.NetDesktop.dll"):
+              assert required in names, f"missing {required}"
+          lite = zipfile.ZipFile(f"Couchbase.Lite.{version}.nupkg")
+          nuspec = lite.read("Couchbase.Lite.nuspec").decode("utf-8")
+          print(nuspec)
+          assert f'version="[{version}]"' in nuspec, "Support.NetDesktop dependency is not pinned"
+          assert b"IsTrimmable" in lite.read("lib/net8.0/Couchbase.Lite.dll"), "Couchbase.Lite.dll is not marked trimmable"
+          print("packages OK")
+          PY
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: packages
           path: |
@@ -191,22 +205,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             rid: linux-x64
           - runner: ubuntu-24.04-arm
             rid: linux-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
       - name: Native AOT prerequisites
         run: sudo apt-get update -qq && sudo apt-get install -y -qq clang zlib1g-dev
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: packages
           path: out
@@ -229,15 +243,15 @@ jobs:
   publish:
     needs: [version, smoke]
     if: needs.version.outputs.publish == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       packages: write
     steps:
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: packages
           path: out
