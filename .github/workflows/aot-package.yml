@@ -113,6 +113,8 @@ jobs:
         shell: bash
     env:
       VERSION: ${{ needs.version.outputs.version }}
+      # The Windows console code page cannot print the BOM in the generated nuspec.
+      PYTHONUTF8: 1
     steps:
       - uses: actions/checkout@v5
         with:
