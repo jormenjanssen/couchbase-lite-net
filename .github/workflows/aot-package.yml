@@ -1,0 +1,250 @@
+name: AOT package
+
+# Builds the desktop (net8.0) Couchbase.Lite + Couchbase.Lite.Support.NetDesktop packages from this branch
+# (upstream 4.1.2 + the Native AOT / trimming change, couchbase/couchbase-lite-net#1779), adds a linux-arm64
+# LiteCore built from source, verifies them with a Native AOT smoke test on x64 and arm64, and publishes to
+# GitHub Packages on a version tag.
+#
+#   push to aot/**            -> build + smoke test, version 4.1.2-aot.0-ci.<run>, no publish
+#   push tag v4.1.2-aot.<n>   -> build + smoke test + publish 4.1.2-aot.<n>
+
+on:
+  push:
+    branches: ['aot/**']
+    tags: ['v*-aot.*']
+
+permissions:
+  contents: read
+
+env:
+  # Upstream release whose LiteCore (core_version.ini) and prebuilt natives this branch is based on.
+  UPSTREAM_VERSION: 4.1.2
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - id: v
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${UPSTREAM_VERSION}-aot.0-ci.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  litecore-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: couchbase-lite-net
+
+      - name: Resolve LiteCore commit
+        id: core
+        run: |
+          hash=$(sed -n 's/^ce *= *//p' couchbase-lite-net/core_version.ini | tr -d '[:space:]')
+          test -n "$hash"
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout LiteCore
+        run: |
+          git init -q couchbase-lite-core
+          cd couchbase-lite-core
+          git remote add origin https://github.com/couchbase/couchbase-lite-core.git
+          git fetch -q --depth 1 origin "${{ steps.core.outputs.hash }}"
+          git checkout -q FETCH_HEAD
+          git submodule update --init --recursive --depth 1 -- vendor
+
+      # Built inside Debian bookworm so the library only needs glibc <= 2.36 and runs on older device images too.
+      - name: Build LiteCore (Debian bookworm, aarch64)
+        run: |
+          docker run --rm -v "$PWD/couchbase-lite-core:/src" -w /src debian:bookworm bash -euxo pipefail -c '
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends \
+              build-essential cmake ninja-build git python3 zlib1g-dev ca-certificates curl binutils
+            cmake -S . -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+              -DCMAKE_INSTALL_RPATH="\$ORIGIN" \
+              -DBUILD_ENTERPRISE=OFF
+            cmake --build build --target LiteCore -j "$(nproc)"
+            mkdir -p out
+            cp build/libLiteCore.so out/
+            strip --strip-debug out/libLiteCore.so
+            for lib in libicudata libicui18n libicuuc; do
+              src=$(find build/cbdeps -name "${lib}.so.76*" | sort | head -n1)
+              test -n "$src"
+              cp -L "$src" "out/${lib}.so.76"
+            done
+            chown -R '"$(id -u):$(id -g)"' out build
+          '
+
+      - name: Verify LiteCore binary
+        working-directory: couchbase-lite-core/out
+        run: |
+          ls -l
+          file libLiteCore.so | tee /dev/stderr | grep -q 'ARM aarch64'
+          readelf -d libLiteCore.so | grep -E 'NEEDED|RUNPATH|RPATH'
+          readelf -d libLiteCore.so | grep -E 'RUNPATH|RPATH' | grep -q 'ORIGIN'
+          max=$(objdump -T libLiteCore.so | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -n1)
+          echo "Highest required glibc symbol: $max"
+          test "$(printf '%s\n' "$max" GLIBC_2.36 | sort -V | tail -n1)" = "GLIBC_2.36"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: litecore-linux-arm64
+          path: couchbase-lite-core/out/*
+          if-no-files-found: error
+
+  pack:
+    needs: [version, litecore-linux-arm64]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: couchbase-lite-net
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: couchbase-lite-net/src/global.json
+
+      # AssemblyInfo.props resolves the package logo/readme/license two levels above src/ (upstream CI layout).
+      - name: Arrange upstream CI layout
+        run: cp -r couchbase-lite-net/packaging packaging
+
+      - name: Prebuilt natives from the official ${{ env.UPSTREAM_VERSION }} package
+        run: |
+          curl -sSfL -o support.nupkg \
+            "https://api.nuget.org/v3-flatcontainer/couchbase.lite.support.netdesktop/${UPSTREAM_VERSION}/couchbase.lite.support.netdesktop.${UPSTREAM_VERSION}.nupkg"
+          unzip -q support.nupkg 'runtimes/*' -d official
+          v=couchbase-lite-net/vendor/prebuilt_core
+          mkdir -p $v/windows/x86_64/bin $v/windows/arm64/bin $v/macos/lib $v/linux/x86_64/lib $v/linux/aarch64/lib
+          cp official/runtimes/win-x64/native/LiteCore.* $v/windows/x86_64/bin/
+          cp official/runtimes/win-arm64/native/LiteCore.* $v/windows/arm64/bin/
+          cp official/runtimes/osx/native/libLiteCore.dylib $v/macos/lib/
+          cp official/runtimes/linux-x64/native/* $v/linux/x86_64/lib/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: litecore-linux-arm64
+          path: couchbase-lite-net/vendor/prebuilt_core/linux/aarch64/lib
+
+      - name: Pack
+        working-directory: couchbase-lite-net/src
+        run: |
+          dotnet pack Couchbase.Lite.Support.NetDesktop/Couchbase.Lite.Support.NetDesktop.csproj -c Packaging -p:Version=$VERSION
+          dotnet pack Couchbase.Lite/Couchbase.Lite.csproj -c Packaging -p:Version=$VERSION -p:CblTargetFrameworksOverride=net8.0
+
+      # Same as upstream do_package.ps1: pin the Support.NetDesktop dependency to the exact version.
+      - name: Pin Support.NetDesktop dependency
+        working-directory: couchbase-lite-net/src/packages
+        run: |
+          python3 - "$VERSION" <<'PY'
+          import sys, zipfile, shutil
+          version = sys.argv[1]
+          path = f"Couchbase.Lite.{version}.nupkg"
+          tmp = path + ".tmp"
+          with zipfile.ZipFile(path) as src, zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as dst:
+              for item in src.infolist():
+                  data = src.read(item.filename)
+                  if item.filename == "Couchbase.Lite.nuspec":
+                      text = data.decode("utf-8")
+                      pinned = text.replace(f'version="{version}"', f'version="[{version}]"')
+                      assert pinned != text, "Support.NetDesktop dependency not found in nuspec"
+                      data = pinned.encode("utf-8")
+                  dst.writestr(item, data)
+          shutil.move(tmp, path)
+          PY
+
+      - name: Verify packages
+        working-directory: couchbase-lite-net/src/packages
+        run: |
+          ls -l
+          unzip -l "Couchbase.Lite.Support.NetDesktop.$VERSION.nupkg" | grep -E 'runtimes/'
+          for f in runtimes/linux-arm64/native/libLiteCore.so runtimes/linux-x64/native/libLiteCore.so \
+                   runtimes/win-x64/native/LiteCore.dll runtimes/osx/native/libLiteCore.dylib; do
+            unzip -l "Couchbase.Lite.Support.NetDesktop.$VERSION.nupkg" | grep -q " $f\$" || { echo "missing $f"; exit 1; }
+          done
+          unzip -p "Couchbase.Lite.$VERSION.nupkg" Couchbase.Lite.nuspec | tee /dev/stderr | grep -q "version=\"\[$VERSION\]\""
+          unzip -p "Couchbase.Lite.$VERSION.nupkg" lib/net8.0/Couchbase.Lite.dll | grep -aq IsTrimmable
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            couchbase-lite-net/src/packages/*.nupkg
+            couchbase-lite-net/src/packages/*.snupkg
+          if-no-files-found: error
+
+  smoke:
+    needs: [version, pack]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            rid: linux-x64
+          - runner: ubuntu-24.04-arm
+            rid: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Native AOT prerequisites
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang zlib1g-dev
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+
+      - name: Publish (Native AOT)
+        working-directory: .github/aot-smoke
+        run: |
+          set -o pipefail
+          dotnet publish -c Release -r ${{ matrix.rid }} -p:CblVersion=${{ needs.version.outputs.version }} -o pub 2>&1 | tee publish.log
+          if grep -E 'warning IL[0-9]+' publish.log; then
+            echo "::error::Trim/AOT warnings found (see above)"
+            exit 1
+          fi
+          ls -l pub
+
+      - name: Run
+        working-directory: .github/aot-smoke
+        run: ./pub/AotSmoke
+
+  publish:
+    needs: [version, smoke]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: out
+
+      - name: Push to GitHub Packages
+        run: |
+          dotnet nuget push "out/*.nupkg" \
+            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+            --api-key "${{ secrets.GITHUB_TOKEN }}" \
+            --skip-duplicate

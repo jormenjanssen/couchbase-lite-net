@@ -103,4 +103,27 @@
       <PackagePath>runtimes/linux-x64/native/libicuuc.so.76</PackagePath>
     </None>
   </ItemGroup>
+  <!-- linux-arm64 is opt-in: only packed when a LiteCore build for aarch64 is present in vendor/prebuilt_core. -->
+  <ItemGroup Condition=" $(Configuration.Contains('Packaging')) AND '$(JUST_CSHARP)' == '' AND Exists('$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\aarch64\lib\libLiteCore.so') ">
+    <None Include="$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\aarch64\lib\libLiteCore.so">
+      <Link>aarch64\libLiteCore.so</Link>
+      <Pack>true</Pack>
+      <PackagePath>runtimes/linux-arm64/native/libLiteCore.so</PackagePath>
+    </None>
+    <None Include="$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\aarch64\lib\libicudata.so.76">
+      <Link>aarch64\libicudata.so.76</Link>
+      <Pack>true</Pack>
+      <PackagePath>runtimes/linux-arm64/native/libicudata.so.76</PackagePath>
+    </None>
+    <None Include="$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\aarch64\lib\libicui18n.so.76">
+      <Link>aarch64\libicui18n.so.76</Link>
+      <Pack>true</Pack>
+      <PackagePath>runtimes/linux-arm64/native/libicui18n.so.76</PackagePath>
+    </None>
+    <None Include="$(MSBuildThisFileDirectory)..\..\vendor\prebuilt_core\linux\aarch64\lib\libicuuc.so.76">
+      <Link>aarch64\libicuuc.so.76</Link>
+      <Pack>true</Pack>
+      <PackagePath>runtimes/linux-arm64/native/libicuuc.so.76</PackagePath>
+    </None>
+  </ItemGroup>
 </Project>

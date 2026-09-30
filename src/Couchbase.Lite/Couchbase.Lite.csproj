@@ -20,6 +20,9 @@
       $(ConsoleDotNetVersion);$(MauiDotNetVersion)-android;$(MauiDotNetVersion)-ios;$(MauiDotNetVersion)-maccatalyst</TargetFrameworks>
     <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">
       $(TargetFrameworks);$(DotNetFrameworkVersion);$(MauiDotNetVersion)-windows$(WinUIMinimumVersion)</TargetFrameworks>
+    <!-- Lets a desktop-only package build (e.g. -p:CblTargetFrameworksOverride=net8.0) skip the mobile TFMs,
+         which need MAUI workloads. A global TargetFrameworks override would also hit the Analyzer reference. -->
+    <TargetFrameworks Condition="'$(CblTargetFrameworksOverride)' != ''">$(CblTargetFrameworksOverride)</TargetFrameworks>
     <SingleProject>true</SingleProject>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- Keep each of these on one line: a line break before the value embeds a literal newline/indent into the compiled SupportedOSPlatform attribute (MSBuild doesn't trim it), which breaks CA1416 platform-compat checks for consumers. -->
