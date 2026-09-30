@@ -2,8 +2,8 @@ name: AOT package
 
 # Builds the desktop (net8.0) Couchbase.Lite + Couchbase.Lite.Support.NetDesktop packages from this branch
 # (upstream 4.1.2 + the Native AOT / trimming change, couchbase/couchbase-lite-net#1779), adds a linux-arm64
-# LiteCore built from source, verifies them with a Native AOT smoke test on x64 and arm64, and publishes to
-# GitHub Packages on a version tag.
+# LiteCore built from source, verifies them with a Native AOT smoke test on x64 and arm64, and attaches them to
+# a GitHub Release on a version tag (anonymous download, no token needed).
 #
 #   push to aot/**            -> build + smoke test, version 4.1.2-aot.0-ci.<run>, no publish
 #   push tag v4.1.2-aot.<n>   -> build + smoke test + publish 4.1.2-aot.<n>
@@ -247,20 +247,22 @@ jobs:
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-24.04
     permissions:
-      packages: write
+      contents: write
     steps:
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 10.0.x
-
       - uses: actions/download-artifact@v5
         with:
           name: packages
           path: out
 
-      - name: Push to GitHub Packages
+      # Release assets of a public repository download anonymously, so consumers need no token (unlike
+      # GitHub Packages, whose NuGet feed always requires authentication). Consumers put the .nupkg files in
+      # a local folder source.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          dotnet nuget push "out/*.nupkg" \
-            --source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
-            --api-key "${{ secrets.GITHUB_TOKEN }}" \
-            --skip-duplicate
+          gh release create "$GITHUB_REF_NAME" out/*.nupkg \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Couchbase Lite $VERSION (Native AOT, linux-arm64)" \
+            --notes "Unofficial desktop (net8.0) build: upstream $UPSTREAM_VERSION + couchbase/couchbase-lite-net#1779 (Native AOT / trimming), with a linux-arm64 LiteCore built from source. Download the .nupkg files into a local package folder; no token is needed."
