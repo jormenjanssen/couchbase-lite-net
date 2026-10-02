@@ -188,11 +188,6 @@ public sealed unsafe partial class Database : IDisposable
     [MemberNotNullWhen(false, nameof(C4db))]
     private bool IsClosed => C4db == null;
 
-    static Database()
-    {
-        Native.c4log_enableFatalExceptionBacktrace();
-    }
-
     /// <summary>
     /// Creates a database with a given name and database configuration.  If the configuration
     /// is <c>null</c> then the default configuration will be used.  If the database does not yet
